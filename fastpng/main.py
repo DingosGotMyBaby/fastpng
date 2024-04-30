@@ -5,12 +5,13 @@
 from fastapi import FastAPI
 from fastapi.responses import Response
 
+
 import io
 import time
 import math
-
 from PIL import Image, ImageDraw, ImageFont
 from matplotlib import font_manager
+import os
 
 from .settings import Settings
 
@@ -70,23 +71,16 @@ def read_fonts():
     # sorted_font_keys = sorted(font_keys)
     # return sorted_font_keys
     return sorted(list(font_mapping.keys()))
-   
-@app.get("/generate-image", responses={200: {"content": {"image/png": {}}}})
-async def generate_image(font: str, text: str, font_color: str = "FFFFFF", font_size: int = 40, width: int = 512, height: int = 512, offset_x: int = 256, offset_y: int = 256, anchor: str = "mm"):
+
+
+@app.get("/generate_image", responses={200: {"content": {"image/png": {}}}})
+async def generate_image(font: str, text: str, font_colour: str= "FFFFFF", font_size: int=40, offset_x: int = None, offset_y: int = None):
     """Generates an image with the given text and font
 
     Args:
-        class ImageRequest {
-            font (str): The font name from /fonts
-            text (str): The text to be displayed
-            font_color (str, optional): Color of font in HEX. Defaults to "FFFFFF" (White).
-            font_size (int, optional): The font size in pixels. Defaults to 40.
-            width (int, optional): The Image width in pixels. Defaults to 512.
-            height (int, optional): The Image height in pixels. Defaults to 512.
-            offset_x (int, optional): The position in pixels the anchor will offset from along the x-axis. Defaults to 256.
-            offset_y (int, optional): The position in pixels the anchor will offset from along the y-axis. Defaults to 256.
-            anchor (str, optional): The anchoring type around the (x,y) offset. See https://pillow.readthedocs.io/en/stable/handbook/text-anchors.html
-        }
+        font (str): The font name from /fonts
+        text (str): The text to be displayed
+        font_colour (str, optional): Colour of font in HEX. Defaults to "FFFFFF" (White).
 
     Returns:
         File: The generated PNG file
@@ -94,61 +88,75 @@ async def generate_image(font: str, text: str, font_color: str = "FFFFFF", font_
     if font not in font_mapping:
         return {"error": "Font not found"}
     
-    sanitized_font_colour = font_color.lstrip("#")
-
+    # remove # from font_colour
+    font_colour = font_colour.lstrip("#")
     # check that font_colour is a valid hex code
-    if not all(c in "0123456789ABCDEF" for c in sanitized_font_colour):
+    if not all(c in "0123456789ABCDEF" for c in font_colour):
         return {"error": "Invalid font colour"}
 
+
     start_time = time.time()
+    # image = Image.new("RGBA", (512, 512), (255, 255, 255, 255))
+    start_path = os.path.abspath(__file__)
+    image_path = os.path.dirname(start_path) + os.path.sep + "assets" + os.path.sep + "parchment_sign_1_bg.png"
+    image = Image.open(image_path)
+    # font_size = 40
+    logger.debug(f"Font: {font}, Text: {text}")
+    font_file = ImageFont.truetype(font_mapping[font], font_size)
 
-    image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    # Holy Fuck this was a bad idea to scale it in this method
+    # logger.debug(f"Font bounding box: {font_file.getbbox(text)}, Image Size: {image.size}, Mathed: {image.size[0] * (font_pct / 100)}")
+    # while font_file.getbbox(text)[0] < image.size[0] * (font_pct / 100):
+    #     font_size += 1
+    #     font_file = ImageFont.truetype(font_mapping[font], font_size)
+    #     logger.debug(f"Font Size: {font_size}")
 
-    # logger.debug(f"Font: {font}, Text: {text}")
-    optimal_font_size = font_size
+    # scales font size to image size
+    textLength = font_file.getlength(text) # gets length of text in pixels at size of 16
+    image_size = image.size # (width, height)
+    # ratio = 500 / textLength # ratio is fixed width of 500 divided by the pixel length
+    ratio = image_size[1] * 0.97 / textLength
 
-    font_file = ImageFont.truetype(font_mapping[font], optimal_font_size)
-
-    text_length = font_file.getlength(text)
+    # if ratio < 1: # less than
+    #     font_size = math.floor(font_size * (1 + ratio))
+    #     logger.debug(f"font size is: {font_size}")
+    if ratio > 1: # greater than
+        font_size = math.floor(font_size * ratio)
     
-    ratio = width * 0.97 / text_length
-
-    if ratio < 1:
-        optimal_font_size = math.floor(optimal_font_size * ratio)    
     
-    # logger.debug(f"Text Length: {textLength}, Ratio: {ratio}, Font Size: {font_size}")
+    logger.debug(f"Text Length: {textLength}, Ratio: {ratio}, Font Size: {font_size}")
 
-    font_file = ImageFont.truetype(font_mapping[font], optimal_font_size)
+    font_file = ImageFont.truetype(font_mapping[font], font_size)
 
     # convert font_colour hex code to tuple
-    font_colour_tuple = tuple(int(sanitized_font_colour[i:i+2], 16) for i in (0, 2, 4))
+    font_colour_tuple = tuple(int(font_colour[i:i+2], 16) for i in (0, 2, 4))
 
     draw = ImageDraw.Draw(image)
-
-    draw.text((offset_x, offset_y), text, font=font_file, fill=font_colour_tuple, anchor=anchor)
+    offset = (image_size[0] / 2, image_size[1] / 2) if offset_x is None and offset_y is None else (offset_x, offset_y)
+    draw.text(offset, text, font=font_file, fill=font_colour_tuple, anchor="mm")
 
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
-
-    # bytes
-    result = buffer.getvalue()
-
-    # Base 64 Alternative
-    # buffer.seek(0)
-    # result = "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
-
     end_time = time.time()
     logger.info(f"Time taken: {end_time - start_time} seconds")
 
+    
     return Response(
-        result,
+        buffer.getvalue(),
         media_type="image/png",
         headers={
+            "x-image-size": f"{image_size[1]}x{image_size[0]}",
             "x-time-taken": f"{end_time-start_time}",
-            "x-image-size": f"{width}x{height}",
-            "x-font-size": f"{optimal_font_size}",
+            "x-font-size": f"{font_size}",
         },
     )
+
+@app.get("/debug")
+def debug():
+    start_path = os.path.abspath(__file__)
+    image_path = os.path.dirname(start_path) + os.path.sep + "assets" + os.path.sep + "parchment_sign_1_bg.png"
+
+    return image_path
 
 
 if __name__ == "__main__":
